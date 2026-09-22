@@ -1,0 +1,527 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Persona Forge — Product Preview</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+
+<!-- ============================= LOGIN ============================= -->
+<div id="login-screen" style="min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px; background:#F6F5F1;">
+  <div style="width:100%; max-width:380px; text-align:center;">
+    <div class="mono" style="font-weight:600; font-size:15px; letter-spacing:0.03em; margin-bottom:36px;">PERSONA_FORGE</div>
+    <form id="login-form" style="background:#FFFFFF; border:1px solid #DEDBD1; border-radius:10px; padding:32px; text-align:left;">
+      <div style="font-size:18px; font-weight:600; margin-bottom:4px;">Sign in</div>
+      <div style="font-size:13px; color:#8A8577; margin-bottom:24px;">Product preview — any details will do.</div>
+      <div class="pf-field">
+        <label for="li-email">Work email</label>
+        <input id="li-email" type="email" placeholder="you@northbridgecap.com" value="priya@northbridgecap.com" required>
+      </div>
+      <div class="pf-field">
+        <label for="li-password">Password</label>
+        <input id="li-password" type="password" placeholder="••••••••" value="preview" required>
+      </div>
+      <button type="submit" class="pf-btn pf-btn--primary" style="width:100%; margin-top:6px;">Sign in</button>
+    </form>
+  </div>
+</div>
+
+<!-- ============================== APP =============================== -->
+<div id="app-shell" style="display:none;">
+
+  <aside class="pf-sidebar">
+    <div class="pf-sidebar-brand">
+      <span class="pf-sidebar-brand-mark">PF</span>
+      PERSONA_FORGE
+    </div>
+
+    <div class="pf-nav-group">
+      <div class="pf-nav-group-label">Product</div>
+      <button class="pf-nav-btn" data-view="dashboard">
+        <svg class="pf-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
+        Dashboard
+      </button>
+      <button class="pf-nav-btn" data-view="chat">
+        <svg class="pf-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 5h16v11H8l-4 4V5z"/></svg>
+        Chat
+      </button>
+      <button class="pf-nav-btn" data-view="agents">
+        <svg class="pf-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.5 4.5l2 2M17.5 17.5l2 2M19.5 4.5l-2 2M6.5 17.5l-2 2"/></svg>
+        Agents
+      </button>
+      <button class="pf-nav-btn is-locked" id="nav-agent-builder-btn">
+        <svg class="pf-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 018 0v3"/></svg>
+        Agent Builder
+        <span class="pf-nav-phase-tag">Phase 2</span>
+      </button>
+    </div>
+
+    <div class="pf-nav-group">
+      <div class="pf-nav-group-label">Governance</div>
+      <button class="pf-nav-btn" data-view="persona">
+        <svg class="pf-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="8" r="3.5"/><path d="M4.5 20c1.4-3.6 4.4-5.5 7.5-5.5S18.1 16.4 19.5 20"/></svg>
+        Persona
+      </button>
+      <button class="pf-nav-btn" data-view="audit">
+        <svg class="pf-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3z"/><path d="M9 12l2 2 4-4"/></svg>
+        Controls &amp; Audit
+      </button>
+    </div>
+
+    <div class="pf-nav-group">
+      <div class="pf-nav-group-label">Admin</div>
+      <button class="pf-nav-btn" data-view="users">
+        <svg class="pf-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="9" cy="8" r="3"/><path d="M2.5 20c1-3.3 3.4-5 6.5-5s5.5 1.7 6.5 5"/><circle cx="17.5" cy="8.5" r="2.3"/><path d="M16 13.2c2.4.3 4 1.8 4.7 4"/></svg>
+        Users
+      </button>
+      <button class="pf-nav-btn" data-view="billing">
+        <svg class="pf-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="2.5" y="5.5" width="19" height="13" rx="2"/><path d="M2.5 10h19"/></svg>
+        Billing
+      </button>
+      <button class="pf-nav-btn" data-view="security">
+        <svg class="pf-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3z"/></svg>
+        Security
+      </button>
+    </div>
+
+    <div class="pf-sidebar-footer">Design Partner Preview</div>
+  </aside>
+
+  <div class="pf-main">
+    <div class="pf-topbar">
+      <div class="pf-topbar-inner">
+
+        <div class="pf-org-wrap">
+          <button class="pf-org-btn" id="org-switcher-btn">
+            <span class="pf-org-avatar" id="org-avatar">NC</span>
+            <span id="org-name">Northbridge Capital</span>
+            <span class="pf-preview-badge" title="Sample data for design-partner walkthroughs">Preview</span>
+            <svg class="pf-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="width:13px;height:13px;"><path d="M6 9l6 6 6-6"/></svg>
+          </button>
+          <div class="pf-dropdown" id="org-dropdown">
+            <div class="pf-dropdown-label">Switch tenant</div>
+            <button class="pf-dropdown-item" data-tenant="northbridge">
+              <span class="pf-org-avatar">NC</span> Northbridge Capital
+            </button>
+            <button class="pf-dropdown-item" data-tenant="ashford">
+              <span class="pf-org-avatar">AP</span> Ashford Partners
+            </button>
+          </div>
+        </div>
+
+        <div class="pf-search">
+          <svg class="pf-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+          <span>Search deals, agents, users…</span>
+          <span class="pf-search-kbd">⌘K</span>
+        </div>
+
+        <div class="pf-topbar-right">
+          <div class="pf-org-wrap">
+            <button class="pf-bell-btn" id="bell-btn">
+              <svg class="pf-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M6 9a6 6 0 0112 0c0 4 1.5 5.5 1.5 5.5H4.5S6 13 6 9z"/><path d="M10 18a2 2 0 004 0"/></svg>
+              <span class="pf-bell-dot" id="bell-dot"></span>
+            </button>
+            <div class="pf-dropdown pf-dropdown--right" id="notif-dropdown" style="min-width:300px;">
+              <div class="pf-dropdown-label">Notifications</div>
+              <div id="notif-list"></div>
+            </div>
+          </div>
+
+          <div class="pf-org-wrap">
+            <button class="pf-avatar" id="avatar-btn">PS</button>
+            <div class="pf-dropdown pf-dropdown--right" id="avatar-dropdown">
+              <div class="pf-dropdown-label" id="avatar-menu-name">Priya Shah</div>
+              <button class="pf-dropdown-item" id="menu-profile-btn">
+                <svg class="pf-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="8" r="3.5"/><path d="M4.5 20c1.4-3.6 4.4-5.5 7.5-5.5S18.1 16.4 19.5 20"/></svg>
+                Profile &amp; settings
+              </button>
+              <div class="pf-dropdown-divider"></div>
+              <button class="pf-dropdown-item" id="sign-out-btn">
+                <svg class="pf-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M9 4H5v16h4M16 8l4 4-4 4M20 12H9"/></svg>
+                Sign out
+              </button>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ---------------------------- DASHBOARD ---------------------------- -->
+    <section class="pf-view" data-view="dashboard">
+      <div class="pf-view-header">
+        <div>
+          <h1 class="pf-view-title">Dashboard</h1>
+          <p class="pf-view-sub" id="dashboard-sub">Diligence Analyst persona · v3 · 12 active users</p>
+        </div>
+      </div>
+
+      <div id="allowance-alert" class="pf-alert-banner" style="display:none;">
+        <svg class="pf-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="width:18px;height:18px;"><path d="M12 3l9 16H3l9-16z"/><path d="M12 10v4M12 17.5v.01"/></svg>
+        <span id="allowance-alert-text"></span>
+      </div>
+
+      <div class="pf-grid4" style="margin-bottom:18px;">
+        <div class="pf-stat">
+          <div class="pf-stat-label">Tokens used this month</div>
+          <div class="pf-stat-value" id="stat-tokens-used">2.84M</div>
+          <div class="pf-bar-track"><div class="pf-bar-fill" id="stat-tokens-bar" style="width:71%;"></div></div>
+          <div class="pf-stat-note" id="stat-tokens-note">71% of 4M included</div>
+        </div>
+        <div class="pf-stat">
+          <div class="pf-stat-label">Active users</div>
+          <div class="pf-stat-value" id="stat-active-users">12</div>
+          <div class="pf-stat-note" id="stat-seats-note">of 15 licensed seats</div>
+        </div>
+        <div class="pf-stat">
+          <div class="pf-stat-label">Conformance rate</div>
+          <div class="pf-stat-value" id="stat-conformance">98.6%</div>
+          <div class="pf-stat-note">Outputs passing verification</div>
+        </div>
+        <div class="pf-stat">
+          <div class="pf-stat-label">Flagged, awaiting review</div>
+          <div class="pf-stat-value pf-stat-value--flag" id="stat-flagged-count">3</div>
+          <div class="pf-stat-note"><a href="#" data-view="audit" class="pf-nav-link">Open review queue</a></div>
+        </div>
+      </div>
+
+      <div class="pf-grid2">
+        <div class="pf-panel">
+          <div class="pf-panel-title">Recent activity</div>
+          <div class="pf-panel-sub">Latest outputs across all agents</div>
+          <div class="pf-row-list" id="dashboard-activity"></div>
+        </div>
+        <div class="pf-panel">
+          <div class="pf-panel-title">Usage this month</div>
+          <div class="pf-panel-sub">Relative daily token volume, last 8 weeks</div>
+          <div class="pf-week-bars" id="dashboard-usage-bars"></div>
+        </div>
+      </div>
+
+      <div class="pf-panel" style="margin-top:14px;">
+        <div class="pf-panel-title">Usage by agent</div>
+        <div class="pf-panel-sub">Conversations and token consumption this month</div>
+        <table class="pf-table">
+          <thead><tr><th>Agent</th><th>Conversations</th><th>Tokens</th><th>Share of usage</th></tr></thead>
+          <tbody id="dashboard-agent-usage-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ------------------------------- CHAT ------------------------------ -->
+    <section class="pf-view" data-view="chat">
+      <div class="pf-view-header">
+        <div>
+          <h1 class="pf-view-title">Chat</h1>
+          <p class="pf-view-sub">Every reply is checked against the active persona spec before it reaches you.</p>
+        </div>
+        <button class="pf-btn pf-btn--ghost" id="new-conversation-btn">New conversation</button>
+      </div>
+
+      <div class="pf-chat-layout">
+        <div class="pf-chat-list" id="chat-conversation-list"></div>
+
+        <div class="pf-chat-shell">
+          <div class="pf-chat-head">
+            <label for="chat-agent-select" class="sr-only">Agent</label>
+            <select id="chat-agent-select" class="pf-chat-agent-select"></select>
+            <span class="pf-badge pf-badge--verified" id="chat-persona-badge"><span class="pf-badge-dot"></span>Persona: Diligence Analyst v3</span>
+          </div>
+          <div class="pf-chat-body" id="chat-body"></div>
+          <form id="chat-form" class="pf-chat-form">
+            <label for="chat-input" class="sr-only">Message</label>
+            <textarea id="chat-input" class="pf-chat-input" rows="1" placeholder="Ask about the current deal room…"></textarea>
+            <button type="submit" class="pf-btn pf-btn--primary">Send</button>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <!-- ------------------------------ PERSONA ----------------------------- -->
+    <section class="pf-view" data-view="persona">
+      <div class="pf-view-header">
+        <div>
+          <h1 class="pf-view-title">Persona</h1>
+          <p class="pf-view-sub">The spec every agent on this tenant is locked to.</p>
+        </div>
+        <button class="pf-locked-btn" id="add-persona-btn">
+          <svg class="pf-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="width:14px;height:14px;"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 018 0v3"/></svg>
+          + Add persona
+        </button>
+      </div>
+
+      <div class="pf-grid2">
+        <div class="pf-panel">
+          <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:16px;">
+            <div>
+              <div class="pf-panel-title" id="persona-name" style="font-size:15px; margin-bottom:0;">Diligence Analyst</div>
+              <div class="pf-panel-sub" id="persona-meta" style="margin-bottom:0;">Version 3 · updated Sept 12, 2026 by Priya Shah</div>
+            </div>
+            <div style="display:flex; gap:6px;">
+              <span class="pf-badge pf-badge--verified" id="persona-validated-badge"><span class="pf-badge-dot"></span>Validated</span>
+              <span class="pf-badge pf-badge--verified"><span class="pf-badge-dot"></span>Active</span>
+            </div>
+          </div>
+
+          <div class="pf-spec-field">
+            <div class="pf-spec-label">Tone &amp; voice</div>
+            <div class="pf-spec-value" id="persona-tone"></div>
+          </div>
+          <div class="pf-spec-field">
+            <div class="pf-spec-label">Allowed scope</div>
+            <div class="pf-spec-value" id="persona-scope"></div>
+          </div>
+          <div class="pf-spec-field">
+            <div class="pf-spec-label">Forbidden topics</div>
+            <ul class="pf-spec-list" id="persona-forbidden"></ul>
+          </div>
+          <div class="pf-spec-field">
+            <div class="pf-spec-label">Escalation rule</div>
+            <div class="pf-spec-value" id="persona-escalation"></div>
+          </div>
+          <div class="pf-spec-field">
+            <div class="pf-spec-label">Example transcript</div>
+            <div class="pf-mini-transcript" id="persona-example-transcript"></div>
+          </div>
+        </div>
+
+        <div class="pf-panel">
+          <div class="pf-panel-title">Version history</div>
+          <div class="pf-panel-sub">Prior specs are kept, never overwritten</div>
+          <div class="pf-row-list" id="persona-history"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ------------------------------- AGENTS ----------------------------- -->
+    <section class="pf-view" data-view="agents">
+      <div class="pf-view-header">
+        <div>
+          <h1 class="pf-view-title">Agents</h1>
+          <p class="pf-view-sub">Preset agents built on the active persona — nothing here starts from a blank prompt.</p>
+        </div>
+      </div>
+      <div class="pf-grid3" id="agents-grid"></div>
+    </section>
+
+    <!-- --------------------------- CONTROLS & AUDIT ------------------------ -->
+    <section class="pf-view" data-view="audit">
+      <div class="pf-view-header">
+        <div>
+          <h1 class="pf-view-title">Controls &amp; Audit</h1>
+          <p class="pf-view-sub">Every output verified before delivery; every output traceable after the fact.</p>
+        </div>
+      </div>
+
+      <div class="pf-panel" style="margin-bottom:18px;">
+        <div class="pf-panel-title">Review queue</div>
+        <div class="pf-panel-sub">Flagged items awaiting a human decision</div>
+        <table class="pf-table">
+          <thead><tr><th>Agent</th><th>Category</th><th>Severity</th><th>Status</th><th>When</th></tr></thead>
+          <tbody id="review-queue-body"></tbody>
+        </table>
+      </div>
+
+      <div class="pf-panel">
+        <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:16px; flex-wrap:wrap;">
+          <div>
+            <div class="pf-panel-title">Audit log</div>
+            <div class="pf-panel-sub">Every output, linked to the persona version and rule outcome that governed it</div>
+          </div>
+          <button class="pf-locked-btn" id="schedule-report-btn">
+            <svg class="pf-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="width:14px;height:14px;"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 018 0v3"/></svg>
+            Schedule report
+          </button>
+        </div>
+        <div class="pf-chip-row" id="audit-filters">
+          <button class="pf-chip is-active" data-filter="all">All</button>
+          <button class="pf-chip" data-filter="Verified">Verified</button>
+          <button class="pf-chip" data-filter="Flagged">Flagged</button>
+        </div>
+        <table class="pf-table">
+          <thead><tr><th>Agent</th><th>Persona</th><th>Outcome</th><th>When</th></tr></thead>
+          <tbody id="audit-log-body"></tbody>
+        </table>
+        <div class="pf-table-footer">
+          <span id="audit-page-info"></span>
+          <div style="display:flex; gap:8px;">
+            <button class="pf-page-btn" id="audit-prev-btn">Previous</button>
+            <button class="pf-page-btn" id="audit-next-btn">Next</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- -------------------------------- USERS ------------------------------ -->
+    <section class="pf-view" data-view="users">
+      <div class="pf-view-header">
+        <div>
+          <h1 class="pf-view-title">Users</h1>
+          <p class="pf-view-sub">Tenant admin and standard user roles, enforced at the API level.</p>
+        </div>
+        <button class="pf-btn pf-btn--primary" id="invite-user-btn">Invite user</button>
+      </div>
+
+      <div class="pf-panel">
+        <table class="pf-table">
+          <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Last active</th><th></th></tr></thead>
+          <tbody id="users-table-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- -------------------------------- BILLING ------------------------------ -->
+    <section class="pf-view" data-view="billing">
+      <div class="pf-view-header">
+        <div>
+          <h1 class="pf-view-title">Billing</h1>
+          <p class="pf-view-sub">Plan, usage-based charges, and invoice history for this tenant.</p>
+        </div>
+      </div>
+
+      <div class="pf-panel pf-plan-card" style="margin-bottom:18px;">
+        <div>
+          <div class="pf-plan-name" id="billing-plan-name">Growth plan</div>
+          <div class="pf-plan-price" id="billing-plan-price">$2,400/mo base</div>
+        </div>
+        <button class="pf-btn pf-btn--ghost">Change plan</button>
+      </div>
+
+      <div class="pf-grid2" style="margin-bottom:18px;">
+        <div class="pf-panel">
+          <div class="pf-panel-title">Token usage this cycle</div>
+          <div class="pf-panel-sub" id="billing-usage-sub">2.84M of 4M included</div>
+          <div class="pf-bar-track" style="margin-top:0;"><div class="pf-bar-fill" id="billing-usage-bar" style="width:71%;"></div></div>
+          <div class="pf-stat-note" style="margin-top:12px;" id="billing-overage-rate">Overage: $4.00 per 100K tokens over allowance</div>
+        </div>
+        <div class="pf-panel">
+          <div class="pf-panel-title">Next invoice</div>
+          <div class="pf-panel-sub">Auto-billed to card on file</div>
+          <div class="pf-stat-value" id="billing-next-date" style="font-size:20px;">Oct 1, 2026</div>
+        </div>
+      </div>
+
+      <div class="pf-panel" style="margin-bottom:18px;">
+        <div class="pf-panel-title">Invoice history</div>
+        <table class="pf-table">
+          <thead><tr><th>Date</th><th>Amount</th><th>Status</th></tr></thead>
+          <tbody id="billing-invoices-body"></tbody>
+        </table>
+      </div>
+
+      <div class="pf-panel">
+        <div class="pf-panel-title">Add-ons</div>
+        <div class="pf-panel-sub">Available on top of any plan</div>
+        <div id="billing-addons-list"></div>
+      </div>
+    </section>
+
+    <!-- -------------------------------- SECURITY ------------------------------ -->
+    <section class="pf-view" data-view="security">
+      <div class="pf-view-header">
+        <div>
+          <h1 class="pf-view-title">Security</h1>
+          <p class="pf-view-sub">Authentication methods and the tenant-scoped admin activity log.</p>
+        </div>
+      </div>
+
+      <div class="pf-panel" style="margin-bottom:18px;">
+        <div class="pf-panel-title">Authentication</div>
+        <div id="auth-methods-list"></div>
+      </div>
+
+      <div class="pf-panel">
+        <div class="pf-panel-title">Admin activity log</div>
+        <div class="pf-panel-sub">User, persona, and agent changes — separate from the conversation-level audit trail</div>
+        <div class="pf-row-list" id="admin-activity-list"></div>
+      </div>
+    </section>
+
+    <p class="pf-preview-note">Product preview with sample data for design-partner walkthroughs — no live model or backend is connected.</p>
+  </div>
+</div>
+
+<!-- ============================ DRAWERS / MODALS ============================ -->
+
+<div class="pf-drawer-backdrop" id="review-drawer-backdrop">
+  <div class="pf-drawer" role="dialog" aria-modal="true" aria-labelledby="review-drawer-title">
+    <div class="pf-drawer-title" id="review-drawer-title">Flagged item</div>
+    <div class="pf-drawer-sub" id="review-drawer-sub"></div>
+    <div id="review-drawer-body"></div>
+    <div class="pf-drawer-actions">
+      <button class="pf-btn pf-btn--primary" id="review-resolve-btn">Mark resolved</button>
+      <button class="pf-btn pf-btn--ghost" id="review-drawer-close">Close</button>
+    </div>
+  </div>
+</div>
+
+<div class="pf-drawer-backdrop" id="invite-drawer-backdrop">
+  <div class="pf-drawer" role="dialog" aria-modal="true" aria-labelledby="invite-drawer-title">
+    <div class="pf-drawer-title" id="invite-drawer-title">Invite user</div>
+    <div class="pf-drawer-sub">They'll get an email invite to join this tenant.</div>
+    <form id="invite-form">
+      <div class="pf-field"><label for="invite-name">Name</label><input id="invite-name" type="text" placeholder="Full name" required></div>
+      <div class="pf-field"><label for="invite-email">Email</label><input id="invite-email" type="email" placeholder="name@company.com" required></div>
+      <div class="pf-field"><label for="invite-role">Role</label>
+        <select id="invite-role"><option>Standard User</option><option>Tenant Admin</option></select>
+      </div>
+      <div class="pf-drawer-actions" style="margin-top:4px;">
+        <button type="submit" class="pf-btn pf-btn--primary">Send invite</button>
+        <button type="button" class="pf-btn pf-btn--ghost" id="invite-drawer-close">Cancel</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="pf-drawer-backdrop" id="phase2-modal-backdrop">
+  <div class="pf-drawer" role="dialog" aria-modal="true" aria-labelledby="phase2-modal-title">
+    <span class="pf-nav-phase-tag" id="phase2-modal-tag" style="display:inline-block; margin-bottom:10px;">Phase 2</span>
+    <div class="pf-drawer-title" id="phase2-modal-title">Feature name</div>
+    <p style="font-size:13.5px; line-height:1.65; color:#4B5159; margin:8px 0 0;" id="phase2-modal-body"></p>
+    <div class="pf-drawer-actions">
+      <button class="pf-btn pf-btn--primary" id="phase2-modal-cta">Talk to us about early access</button>
+      <button class="pf-btn pf-btn--ghost" id="phase2-modal-close">Close</button>
+    </div>
+  </div>
+</div>
+
+<div class="pf-drawer-backdrop" id="manage-user-drawer-backdrop">
+  <div class="pf-drawer" role="dialog" aria-modal="true" aria-labelledby="manage-user-title">
+    <div class="pf-drawer-title" id="manage-user-title">Manage user</div>
+    <div class="pf-drawer-sub" id="manage-user-email"></div>
+    <div class="pf-field">
+      <label for="manage-user-role">Role</label>
+      <select id="manage-user-role"><option>Standard User</option><option>Tenant Admin</option></select>
+    </div>
+    <div class="pf-drawer-actions">
+      <button class="pf-btn pf-btn--primary" id="manage-user-save-btn">Save changes</button>
+      <button class="pf-btn pf-btn--ghost" id="manage-user-close-btn">Cancel</button>
+    </div>
+    <div class="pf-drawer-actions" style="margin-top:8px; border-top:1px solid #EFEDE6; padding-top:16px;">
+      <button class="pf-btn pf-btn--ghost" id="manage-user-remove-btn" style="color:#B5502D; border-color:#E3B39F;">Remove user</button>
+    </div>
+  </div>
+</div>
+
+<div class="pf-drawer-backdrop" id="profile-drawer-backdrop">
+  <div class="pf-drawer" role="dialog" aria-modal="true" aria-labelledby="profile-drawer-title">
+    <div class="pf-drawer-title" id="profile-drawer-title">Profile &amp; settings</div>
+    <div class="pf-drawer-sub">Read-only in this preview.</div>
+    <div class="pf-drawer-row"><span class="pf-drawer-row-label">Name</span><span id="profile-name"></span></div>
+    <div class="pf-drawer-row"><span class="pf-drawer-row-label">Email</span><span id="profile-email"></span></div>
+    <div class="pf-drawer-row"><span class="pf-drawer-row-label">Tenant</span><span id="profile-tenant"></span></div>
+    <div class="pf-drawer-actions">
+      <button class="pf-btn pf-btn--ghost" id="profile-drawer-close">Close</button>
+    </div>
+  </div>
+</div>
+
+<div class="pf-toast" id="toast"></div>
+
+<script src="js/mockData.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
