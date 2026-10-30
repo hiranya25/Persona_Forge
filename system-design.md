@@ -9,7 +9,7 @@
 2. [Users, roles & portals](#2-users-roles--portals)
 3. [Features per portal](#3-features-per-portal)
 4. [High-level architecture](#4-high-level-architecture)
-5. AI/ML pipeline — _TBD_
+5. [AI/ML pipeline](#5-aiml-pipeline)
 6. Data model — _TBD_
 7. API design — _TBD_
 8. Multi-tenancy & security — _TBD_
@@ -218,6 +218,137 @@ split into its own service later without changing the others' contracts.
 
 ---
 
+## 5. AI/ML pipeline
+
+Every question goes through the same stages. The API service orchestrates
+them; the small models run in the inference service and the writer runs in
+Ollama.
+
+```
+question ─► [0 Rewrite] ─► [1 Input guard] ─► [2 Retrieve] ─► [2b Evidence?] ─► [3 Write] ─► [4 Verify] ─► [5 Decide] ─► [6 Record]
+                               │ violation          │ nothing relevant                 ▲            │
+                               ▼                    ▼                                  │  1 retry   │
+                            REFUSE          "not in the documents"                     └────────────┘
+```
+
+### 5.1 Stages
+
+**0. Rewrite follow-ups** — only when the conversation has history. The writer
+LLM rewrites the latest message into a standalone question (*"and in 2022?"* →
+*"What was Apple's total revenue in fiscal 2022?"*). The standalone question is
+used by every later stage and stored in the audit log.
+
+**1. Input guard** — two trained models, run before any expensive work:
+
+- **Attack detector** — classifies the question as `benign`, `jailbreak`, or
+  `prompt_injection`.
+- **Rule matcher** — a cross-encoder that scores a *(text, rule)* pair:
+  *"does this text violate this rule?"* It runs once per forbidden-topic rule
+  in the active persona, plus once against the persona's **scope** statement
+  (*"is this question in scope?"*). Because it learns the general skill of
+  matching text against a rule written in plain English, it works on
+  **custom rules a company writes that the model has never seen**.
+
+A clear violation → **REFUSE** with the persona's refusal message, without
+calling the writer. A borderline score is recorded and carried forward to the
+decision stage.
+
+**2. Retrieve** — hybrid search, always filtered to the company's private
+documents plus the shared collections it has enabled:
+
+1. Keyword search (Postgres full-text) → top 30 passages.
+2. Vector search (pgvector, fine-tuned embedder) → top 30 passages.
+3. Merge with **Reciprocal Rank Fusion**.
+4. **Reranker** (cross-encoder) scores the merged set → keep the top 5.
+
+**2b. Evidence check** — if the best reranker score is below the evidence
+threshold, reply *"I couldn't find this in the available documents"* without
+calling the writer. This is the cheapest and most reliable hallucination
+defence.
+
+**3. Write** — the writer LLM gets a prompt built from:
+
+- the persona: tone, scope, forbidden topics, escalation rule;
+- fixed instructions: answer **only** from the sources, cite a source label
+  (`[S1]`…`[S5]`) on **every** sentence, say so plainly when the sources don't
+  contain the answer;
+- the 5 passages, labelled `S1`…`S5`;
+- on a retry, the specific failures from stage 4 (e.g. *"sentence 2 cites a
+  figure not in S3"*).
+
+Low temperature (≈0.1) for consistent, factual output.
+
+**4. Verify** — four independent checks on the draft answer:
+
+| Check | Question it answers | How |
+|---|---|---|
+| **a. Citations** | Does every sentence cite a source that was actually provided? | Deterministic parsing |
+| **b. Numbers** | Does every number in the answer appear in the source it cites? | Deterministic: normalise units, scales, currencies, percentages, and years (`$383.3B` ≡ `383,285 million`) with a rounding tolerance |
+| **c. Fact checker** | Is each part of the answer supported by the cited passages? | **Trained model** — token-level hallucination detector over *(passages, answer)*; token scores are aggregated per sentence |
+| **d. Output guard** | Did the answer break a persona rule anyway? | The **rule matcher** again, run on the answer against the forbidden-topic rules |
+
+**5. Decide**
+
+| Outcome | When | Analyst sees |
+|---|---|---|
+| **PASS** | All checks pass with confidence | The answer with its sources |
+| **REGENERATE** | A check fails on the **first** attempt | Nothing yet — the writer retries once with the failures as feedback |
+| **REFUSE** | Input guard or output guard finds a clear violation | The persona's refusal message |
+| **ESCALATE** | Checks still fail after the retry, **or** any score is borderline | *"Under review"* — the case goes to the review queue (section 3.2) |
+
+"Clear" and "borderline" are defined by **thresholds** taken from the
+company's **strictness** setting — three presets (*Lenient*, *Standard*,
+*Strict*), each a set of thresholds calibrated on the evaluation set
+(section 9). Borderline cases go to a human, not to an LLM judge; the
+**LLM-as-judge is used only offline**, in evaluations, to keep live latency low.
+
+**6. Record** — one audit entry per answer, written in the same transaction as
+the message: original and standalone question, persona version, every model
+version, retrieved passage IDs with scores, draft answer(s), every check result
+and score, the decision, and timings for each stage.
+
+### 5.2 Models
+
+| ID | Model | Task | Base model (CPU-friendly) | Trained by us? | Served as |
+|---|---|---|---|---|---|
+| **M1** | Attack detector | Text → benign / jailbreak / prompt injection | ModernBERT-base or DeBERTa-v3-small | **Yes** — fine-tuned | ONNX INT8 |
+| **M2** | Rule matcher | *(text, rule)* → violation probability | ModernBERT-base / DeBERTa-v3-base cross-encoder | **Yes** — fine-tuned | ONNX INT8 |
+| **M3** | Embedder | Text → 384-dim vector | bge-small-en-v1.5 | **Yes** — contrastive fine-tune on finance Q&A | ONNX INT8 |
+| **M4** | Reranker | *(question, passage)* → relevance | bge-reranker-base | Pretrained first; fine-tune is a stretch goal | ONNX INT8 |
+| **M5** | Fact checker | *(passages, answer)* → per-token "unsupported" probability | ModernBERT-base (long context) | **Yes** — fine-tuned | ONNX INT8 |
+| **M6** | Writer | Persona prompt + passages → cited answer | Small open-weight instruct LLM (1.5B–4B) | **Yes** — QLoRA SFT, then DPO | GGUF Q4 via Ollama |
+
+Every model has a **version** in the model registry (section 3.1); the active
+version of each is recorded with every answer.
+
+### 5.3 Security inside the pipeline
+
+- **Indirect prompt injection** — uploaded documents can contain hidden
+  instructions. The attack detector (M1) also scans every passage **at
+  ingestion time**; flagged passages are quarantined and shown to the Company
+  Admin instead of being indexed.
+- **Fail closed** — if the inference service or the writer is unavailable, the
+  analyst gets an error, **never** an unverified answer.
+- **Tenant filter at the query level** — retrieval always filters by company,
+  so one company's passages can never reach another company's prompt.
+
+### 5.4 Latency budget (laptop CPU, estimated)
+
+| Stage | Typical |
+|---|---|
+| Rewrite (only with history) | 1–2 s |
+| Input guard (M1 + M2 × rules) | 50–150 ms |
+| Retrieve + rerank | 150–400 ms |
+| Write (≈150 tokens) | 4–10 s |
+| Verify (checks a–d) | 200–500 ms |
+| **Total, first attempt** | **≈ 5–12 s** |
+| Worst case (one retry) | ≈ 10–22 s |
+
+The writer dominates, which is why it gets a live progress display (section
+4.2) and why borderline cases go to humans rather than to more LLM calls.
+
+---
+
 ## Appendix A — Decision log
 
 | # | Decision | Choice | Why |
@@ -233,3 +364,8 @@ split into its own service later without changing the others' contracts.
 | D9 | Frontend | React + TypeScript, one codebase with `/admin` and `/app` route trees | Job-relevant; shared components across both portals |
 | D10 | Vector + keyword search | Postgres + pgvector + full-text search | One store, easy tenant filtering, hybrid search in one query |
 | D11 | Waiting experience | Live progress steps via Server-Sent Events; answer shown only after verification | Keeps the "verified before delivery" promise while staying responsive |
+| D12 | Custom forbidden-topic rules | Trained rule-matcher cross-encoder on *(text, rule)* pairs + fixed attack detector | Generalises to rules it has never seen; strongest deep-learning component |
+| D13 | Follow-up questions | Rewrite into a standalone question using chat history | Natural conversations; cost paid only when there is history |
+| D14 | Retries on failed verification | 1 retry with failure feedback, then escalate | Balances answer rate against CPU latency |
+| D15 | Borderline scores | Escalate to a human; LLM-as-judge only offline | Keeps live latency low; humans produce training labels |
+| D16 | Failure handling | Fail closed — never show an unverified answer | The core promise of the product |
