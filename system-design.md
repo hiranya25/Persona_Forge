@@ -11,8 +11,8 @@
 4. [High-level architecture](#4-high-level-architecture)
 5. [AI/ML pipeline](#5-aiml-pipeline)
 6. [Data model](#6-data-model)
-7. API design — _TBD_
-8. Multi-tenancy & security — _TBD_
+7. [API design](#7-api-design)
+8. [Multi-tenancy & security](#8-multi-tenancy--security)
 9. Model training & evaluation — _TBD_
 10. Deployment, monitoring & CI — _TBD_
 11. Phased roadmap — _TBD_
@@ -385,10 +385,13 @@ model_versions · eval_runs · notifications · usage_daily
 | Table | Key columns |
 |---|---|
 | `companies` | `id`, `name`, `slug`, `status` (active / suspended), `limits` (max users, max documents, queries per day), `strictness` (lenient / standard / strict), `share_labels` (bool, opt-in), `created_at` |
-| `users` | `id`, `company_id` (NULL for Platform Admins), `email` (unique), `password_hash` (Argon2), `full_name`, `is_platform_admin`, `status` (invited / active / deactivated), `mfa_secret`, `last_login_at` |
+| `users` | `id`, `company_id` (NULL for Platform Admins), `email` (unique), `password_hash` (Argon2id; admins only — NULL for passwordless users), `full_name`, `is_platform_admin`, `status` (invited / active / deactivated), `last_login_at` |
 | `user_roles` | `user_id`, `role` (company_admin / analyst / reviewer / viewer) — one row per role held |
 | `invitations` | `id`, `company_id`, `email`, `roles`, `token_hash`, `expires_at`, `accepted_at`, `invited_by` |
-| `refresh_tokens` | `id`, `user_id`, `token_hash`, `expires_at`, `revoked_at` |
+| `refresh_tokens` | `id`, `user_id`, `family_id`, `token_hash`, `expires_at`, `revoked_at` — rotated on every use; reuse of an old token revokes the whole family |
+| `mfa_methods` | `id`, `user_id`, `type` (passkey / totp / email_otp), `label`, `credential` (WebAuthn public key + sign counter, or encrypted TOTP secret), `created_at`, `last_used_at` |
+| `otp_codes` | `id`, `user_id`, `purpose` (login / mfa), `code_hash`, `expires_at`, `attempts`, `used_at` |
+| `recovery_codes` | `id`, `user_id`, `code_hash`, `used_at` — admins only |
 
 **Personas**
 
@@ -463,6 +466,7 @@ labels appear in the Platform Admin's training-data view.
 | `model_versions` | `id`, `model_key` (M1–M6), `version`, `artifact_uri`, `metrics`, `status` (candidate / active / retired), `promoted_by`, `promoted_at` |
 | `eval_runs` | `id`, `model_versions`, `dataset_version`, `status`, `metrics`, `started_by`, `started_at`, `finished_at` |
 | `notifications` | `id`, `user_id`, `company_id`, `type`, `payload`, `read_at` |
+| `access_grants` | `id`, `company_id`, `admin_user_id`, `reason`, `scope`, `expires_at`, `revoked_at`, `created_at` — break-glass access (section 8.4) |
 | `usage_daily` | `company_id`, `date`, `queries`, `decisions` — counters used to enforce limits and draw usage charts |
 
 ### 6.3 Hash-chained audit log
@@ -510,6 +514,177 @@ background worker:
 
 ---
 
+## 7. API design
+
+### 7.1 Conventions
+
+- **REST + JSON** under `/api/v1`, documented automatically with OpenAPI
+  (FastAPI's `/docs`).
+- **Two route trees**, mirroring the two portals:
+  - `/api/v1/...` — company portal. The company is **always taken from the
+    session, never from the URL or body**, so a user cannot even name another
+    company's data.
+  - `/api/v1/admin/...` — Platform Admin only.
+- **Auth** via httpOnly cookies (section 8.1); state-changing requests also
+  send an `X-CSRF-Token` header.
+- **Errors** use one shape (RFC 9457 *problem details*):
+  `{ "type", "title", "status", "detail", "request_id" }`.
+- **Pagination** is cursor-based: `?limit=50&cursor=…` → `{ items, next_cursor }`.
+- **Live updates** use Server-Sent Events: one stream per chat answer, one per
+  user for notifications.
+- **Rate limits** per user and per company (Redis), returning `429` with
+  `Retry-After`.
+
+### 7.2 Endpoints — company portal
+
+| Group | Endpoints | Roles |
+|---|---|---|
+| **Auth** | `POST /auth/login` (admin password), `POST /auth/otp/request`, `POST /auth/otp/verify`, `POST /auth/mfa/verify`, `POST /auth/passkey/options`, `POST /auth/passkey/verify`, `POST /auth/recovery`, `POST /auth/refresh`, `POST /auth/logout`, `POST /invitations/{token}/accept` | Public / any |
+| **Me** | `GET /me`, `GET/POST/DELETE /me/mfa-methods`, `POST /me/recovery-codes` | Any signed-in user |
+| **Users** | `GET /users`, `POST /invitations`, `PATCH /users/{id}` (roles, status) | Company Admin |
+| **Settings & usage** | `GET/PATCH /settings` (strictness, label sharing, enabled collections), `GET /usage` | Company Admin |
+| **Personas** | `GET /personas`, `POST /personas` (clone a template), `GET /personas/{id}/versions`, `POST /personas/{id}/versions`, `POST /personas/{id}/activate`, `POST /personas/{id}/rollback` | Company Admin (read: all roles) |
+| **Templates** | `GET /persona-templates` | Company Admin |
+| **Documents** | `GET /documents`, `POST /documents` (multipart upload), `GET /documents/{id}`, `DELETE /documents/{id}`, `GET /documents/quarantine`, `POST /documents/quarantine/{chunk_id}/release` | Company Admin (read: Analyst) |
+| **Collections** | `GET /collections` (private + enabled shared) | Company Admin, Analyst |
+| **Chat** | `GET/POST /conversations`, `GET /conversations/{id}`, `POST /conversations/{id}/messages` → SSE stream, `POST /messages/{id}/feedback` | Analyst |
+| **Review** | `GET /review-items`, `GET /review-items/{id}` (full trace), `POST /review-items/{id}/resolve` (approve / correct / reject + notes) | Reviewer |
+| **Audit** | `GET /audit`, `GET /audit/export`, `POST /audit/verify` | Reviewer, Viewer, Company Admin |
+| **Notifications** | `GET /notifications`, `GET /notifications/stream` (SSE), `POST /notifications/{id}/read` | Any signed-in user |
+
+### 7.3 Endpoints — admin portal
+
+| Group | Endpoints |
+|---|---|
+| **Companies** | `GET/POST /admin/companies`, `PATCH /admin/companies/{id}` (limits, status), `DELETE /admin/companies/{id}`, `POST /admin/companies/{id}/invite-admin` |
+| **Persona templates** | `GET/POST /admin/persona-templates`, `POST /admin/persona-templates/{id}/versions`, `POST /admin/persona-templates/{id}/publish` |
+| **Shared library** | `GET/POST /admin/collections`, `POST /admin/collections/{id}/documents`, `POST /admin/collections/{id}/reindex` |
+| **Models** | `GET /admin/models`, `POST /admin/models/{id}/promote`, `POST /admin/models/{id}/rollback` |
+| **Evaluations** | `GET/POST /admin/eval-runs`, `GET /admin/eval-runs/{id}`, `GET /admin/eval-runs/compare?a=…&b=…` |
+| **Training data** | `GET /admin/labels` (shareable only), `POST /admin/labels/export` |
+| **Monitoring** | `GET /admin/metrics` (latency, errors, decision mix, usage per company) |
+| **Break-glass** | `POST /admin/access-grants`, `GET /admin/access-grants`, `POST /admin/access-grants/{id}/revoke` |
+| **Platform audit** | `GET /admin/audit`, `POST /admin/audit/verify` |
+
+### 7.4 Chat stream example
+
+`POST /api/v1/conversations/{id}/messages` with `{ "content": "And in 2022?" }`
+returns `text/event-stream`:
+
+```
+event: stage    data: {"stage": "rewriting"}
+event: stage    data: {"stage": "checking_question"}
+event: stage    data: {"stage": "searching", "passages_found": 5}
+event: stage    data: {"stage": "writing", "attempt": 1}
+event: stage    data: {"stage": "verifying"}
+event: result   data: {"message_id": "…", "decision": "pass",
+                       "answer": "Apple's total net sales in fiscal 2022 were $394.3 billion [S1].",
+                       "sources": [{"label": "S1", "document": "Apple 10-K 2022", "page": 21, "excerpt": "…"}]}
+```
+
+Other `result` decisions: `refuse` (with the persona's message), `no_evidence`,
+and `escalated` (the message shows *"Under review"*; the final answer arrives
+later through the notifications stream).
+
+### 7.5 Inference service (internal)
+
+Reachable only on the internal Docker network and protected with a shared
+service token. Every response includes the model version that produced it.
+
+| Endpoint | Input → output |
+|---|---|
+| `POST /v1/attack` | texts → `benign / jailbreak / prompt_injection` + probabilities (M1) |
+| `POST /v1/rules` | (text, [rules]) → violation probability per rule (M2) |
+| `POST /v1/embed` | texts → 384-dim vectors (M3) |
+| `POST /v1/rerank` | (question, passages) → relevance scores (M4) |
+| `POST /v1/factcheck` | (passages, answer) → per-token and per-sentence unsupported scores (M5) |
+| `GET /v1/health` | loaded models and versions |
+
+The writer (M6) is called through Ollama's own HTTP API.
+
+---
+
+## 8. Multi-tenancy & security
+
+### 8.1 Authentication
+
+| Users | First factor | Second factor | Recovery |
+|---|---|---|---|
+| **Platform Admin, Company Admin** | Password (Argon2id) | **Mandatory** — one of: **passkey** (WebAuthn), **authenticator app** (TOTP), or **email OTP** | 10 one-time **recovery codes**, shown once, stored hashed |
+| **Analyst, Reviewer, Viewer** | **Email OTP** (passwordless) | — | A new code by email |
+
+- **Email OTP:** 6 digits, valid 10 minutes, single use, stored hashed, at most
+  5 attempts per code, and rate-limited per email and per IP. Responses are the
+  same whether or not the email exists.
+- An admin can register **several second factors** (e.g. a passkey plus an
+  authenticator app). Using a recovery code forces registering a new method.
+- **Sessions:** a 15-minute access token and a 7-day refresh token, both in
+  `httpOnly`, `Secure`, `SameSite=Lax` cookies. Refresh tokens rotate on every
+  use; reusing an old one revokes the whole session family (theft detection).
+  CSRF protection uses a double-submit token.
+- **Email delivery:** **Mailpit** in development (a free local inbox that
+  catches every email), any SMTP account in production.
+- Logins, failed logins, MFA changes, and recovery-code use are all audited.
+
+### 8.2 Authorization (role-based access)
+
+Permissions are checked in the API on **every endpoint**, never just hidden in
+the UI.
+
+| Capability | Platform Admin | Company Admin | Analyst | Reviewer | Viewer |
+|---|:-:|:-:|:-:|:-:|:-:|
+| Manage companies, templates, shared library, models, evals | ✅ | — | — | — | — |
+| Manage company users, settings, personas, documents | — | ✅ | — | — | — |
+| Chat with personas | — | — | ✅ | — | — |
+| Read documents & personas | — | ✅ | ✅ | ✅ | ✅ |
+| Work the review queue | — | — | — | ✅ | — |
+| Read / export / verify the audit log | Platform chain | ✅ | — | ✅ | ✅ |
+| See company usage metrics | ✅ (all) | ✅ | — | — | — |
+| Read company conversations | Break-glass only | — | Own only | Escalated only | — |
+
+A user with several roles gets the union of their permissions.
+
+### 8.3 Tenant isolation — two layers
+
+1. **Application layer:** the company comes from the session. Every repository
+   query is built through a tenant-scoped session that adds
+   `WHERE company_id = :current_company` automatically.
+2. **Database layer:** Postgres **Row-Level Security** on every tenant-scoped
+   table. Each request sets `app.company_id` for its transaction; policies
+   reject any row from another company **even if the application layer has a
+   bug**.
+
+Shared-library rows (`company_id` NULL) are readable by a company only when it
+has enabled that collection. An automated **cross-tenant test suite** tries to
+reach another company's data through every endpoint and must always fail.
+
+### 8.4 Break-glass access
+
+1. The Platform Admin requests access to one company with a **written reason**
+   and a duration (maximum 24 hours).
+2. A read-only `access_grant` is created; it **expires automatically** and can
+   be revoked at any time.
+3. The **Company Admin is notified immediately**, and the grant plus every
+   record viewed under it are written to **both** the company's and the
+   platform's audit chains.
+4. Break-glass access never allows changes — read-only, always.
+
+### 8.5 Data & application security
+
+- **Secrets** only in environment variables (`.env` locally, never committed).
+- **Uploads:** size limit, file type checked by content (not by extension),
+  parsed in the background worker, never executed (no macros, no scripts).
+- **Prompt injection** in documents: scanned at ingestion (section 5.3).
+- **Logs** carry request IDs and metrics, **not** question or answer text;
+  content lives only in the database, behind tenant isolation.
+- **Web security:** strict CORS (the web app's origin only), security headers
+  (CSP, HSTS, `X-Frame-Options`), input validation through Pydantic schemas,
+  and parameterised SQL only.
+- **Supply chain:** pinned dependencies, plus automated dependency and
+  container image scanning in CI.
+
+---
+
 ## Appendix A — Decision log
 
 | # | Decision | Choice | Why |
@@ -533,3 +708,8 @@ background worker:
 | D17 | Default writer size | 3B–4B model at 4-bit; 1.5B configurable fallback | Fits a 16 GB laptop alongside the rest of the stack |
 | D18 | Upload formats | PDF (text-based), HTML, DOCX, TXT/Markdown | Covers SEC filings and typical company documents |
 | D19 | Audit log integrity | Append-only, hash-chained per company, with "verify integrity" | Tampering is detectable, not just forbidden |
+| D20 | Browser sessions | Short-lived access + rotating refresh tokens in httpOnly cookies, CSRF token | Tokens unreadable by JavaScript; refresh-token theft detectable |
+| D21 | Authentication | Admins: password + mandatory passkey / TOTP / email OTP, with recovery codes. Analysts, Reviewers, Viewers: passwordless email OTP | Strong protection where privileges are high, low friction for everyday users |
+| D22 | Platform Admin access to company content | Break-glass only: written reason, time-limited, read-only, audited, Company Admin notified | Realistic privacy model while still allowing support and debugging |
+| D23 | Tenant isolation | Application-level scoping + Postgres Row-Level Security + cross-tenant test suite | Defence in depth — a single bug can't leak data |
+| D24 | API style | REST + JSON, OpenAPI docs, SSE for live updates, company always taken from the session | Simple, well-documented, and safe by construction |
