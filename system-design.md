@@ -10,7 +10,7 @@
 3. [Features per portal](#3-features-per-portal)
 4. [High-level architecture](#4-high-level-architecture)
 5. [AI/ML pipeline](#5-aiml-pipeline)
-6. Data model — _TBD_
+6. [Data model](#6-data-model)
 7. API design — _TBD_
 8. Multi-tenancy & security — _TBD_
 9. Model training & evaluation — _TBD_
@@ -316,7 +316,7 @@ and score, the decision, and timings for each stage.
 | **M3** | Embedder | Text → 384-dim vector | bge-small-en-v1.5 | **Yes** — contrastive fine-tune on finance Q&A | ONNX INT8 |
 | **M4** | Reranker | *(question, passage)* → relevance | bge-reranker-base | Pretrained first; fine-tune is a stretch goal | ONNX INT8 |
 | **M5** | Fact checker | *(passages, answer)* → per-token "unsupported" probability | ModernBERT-base (long context) | **Yes** — fine-tuned | ONNX INT8 |
-| **M6** | Writer | Persona prompt + passages → cited answer | Small open-weight instruct LLM (1.5B–4B) | **Yes** — QLoRA SFT, then DPO | GGUF Q4 via Ollama |
+| **M6** | Writer | Persona prompt + passages → cited answer | Small open-weight instruct LLM — 3B–4B by default (16 GB RAM), 1.5B as a configurable fallback | **Yes** — QLoRA SFT, then DPO | GGUF Q4 via Ollama |
 
 Every model has a **version** in the model registry (section 3.1); the active
 version of each is recorded with every answer.
@@ -349,6 +349,167 @@ The writer dominates, which is why it gets a live progress display (section
 
 ---
 
+## 6. Data model
+
+All data lives in one Postgres database. Conventions:
+
+- Primary keys are UUIDs (except `audit_log`, which uses a sequence).
+- **Every tenant-scoped table carries `company_id`**, and every query filters on
+  it (enforcement is described in section 8). Where `company_id` is `NULL`, the
+  row belongs to the platform (shared library, templates, Platform Admins).
+- Anything that explains a past answer — persona versions, answer runs, audit
+  entries — is **immutable**: new versions are inserted, old rows are never
+  updated.
+
+### 6.1 Entity overview
+
+```
+companies ─┬─< users ─< user_roles
+           ├─< invitations
+           ├─< personas ─< persona_versions >─ persona_template_versions >─ persona_templates
+           ├─< collections (private) ─< documents ─< chunks      (collections with company_id NULL = shared library)
+           ├─< company_collections >─ collections (shared)
+           ├─< conversations ─< messages ─── answer_runs ─< run_attempts
+           │                                      ├─< run_retrievals >─ chunks
+           │                                      └── review_items
+           ├─< labels
+           └─< audit_log (one hash chain per company; company_id NULL = platform chain)
+
+model_versions · eval_runs · notifications · usage_daily
+```
+
+### 6.2 Tables
+
+**Tenancy & identity**
+
+| Table | Key columns |
+|---|---|
+| `companies` | `id`, `name`, `slug`, `status` (active / suspended), `limits` (max users, max documents, queries per day), `strictness` (lenient / standard / strict), `share_labels` (bool, opt-in), `created_at` |
+| `users` | `id`, `company_id` (NULL for Platform Admins), `email` (unique), `password_hash` (Argon2), `full_name`, `is_platform_admin`, `status` (invited / active / deactivated), `mfa_secret`, `last_login_at` |
+| `user_roles` | `user_id`, `role` (company_admin / analyst / reviewer / viewer) — one row per role held |
+| `invitations` | `id`, `company_id`, `email`, `roles`, `token_hash`, `expires_at`, `accepted_at`, `invited_by` |
+| `refresh_tokens` | `id`, `user_id`, `token_hash`, `expires_at`, `revoked_at` |
+
+**Personas**
+
+| Table | Key columns |
+|---|---|
+| `persona_templates` | `id`, `name`, `description`, `status` (draft / published / archived) |
+| `persona_template_versions` | `id`, `template_id`, `version`, `spec`, `published_at` — immutable |
+| `personas` | `id`, `company_id`, `name`, `cloned_from` (template version), `status` (active / inactive), `current_version_id` |
+| `persona_versions` | `id`, `persona_id`, `company_id`, `version`, `spec`, `change_note`, `created_by`, `created_at` — immutable |
+
+The `spec` is JSON validated against a schema:
+
+```json
+{
+  "tone": "Neutral, precise, always cites sources.",
+  "scope": "Questions about the financial filings in this workspace.",
+  "forbidden_topics": [
+    { "id": "r1", "text": "Investment recommendations or buy/sell opinions" },
+    { "id": "r2", "text": "Predictions of future stock prices" }
+  ],
+  "escalation": "If unsure, say so and flag for human review.",
+  "refusal_message": "I can't help with that. I can answer questions about the filings themselves.",
+  "example_transcripts": [ { "user": "…", "assistant": "…" } ]
+}
+```
+
+Rule `id`s are stable across versions, so audit entries and labels can point
+at the exact rule that fired.
+
+**Documents & search**
+
+| Table | Key columns |
+|---|---|
+| `collections` | `id`, `company_id` (NULL = shared library), `name`, `description` |
+| `company_collections` | `company_id`, `collection_id` — shared collections a company has enabled |
+| `documents` | `id`, `company_id`, `collection_id`, `title`, `format` (pdf / html / docx / txt / md), `file_path`, `sha256`, `status` (uploaded / processing / indexed / failed / quarantined), `metadata` (e.g. ticker, fiscal year, form type), `uploaded_by` |
+| `chunks` | `id`, `document_id`, `company_id`, `ordinal`, `text`, `page`, `section`, `token_count`, `embedding` (`vector(384)`), `tsv` (`tsvector`), `embedder_version`, `injection_flag` |
+
+Indexes on `chunks`: **HNSW** on `embedding`, **GIN** on `tsv`, B-tree on
+`company_id` and `document_id`. A new embedder version re-embeds chunks in the
+background; search uses only chunks matching the active `embedder_version`.
+
+**Chat & pipeline trace**
+
+| Table | Key columns |
+|---|---|
+| `conversations` | `id`, `company_id`, `user_id`, `persona_id`, `title`, `created_at` |
+| `messages` | `id`, `conversation_id`, `company_id`, `role` (user / assistant), `content`, `status` (final / under_review / resolved), `answer_run_id`, `created_at` |
+| `answer_runs` | `id`, `company_id`, `message_id`, `persona_version_id`, `standalone_question`, `decision` (pass / refuse / escalate / no_evidence), `attempts`, `model_versions`, `stage_timings_ms`, `created_at` — one row per answered question |
+| `run_attempts` | `id`, `run_id`, `attempt_no`, `draft_answer`, `check_results` (citations, numbers, fact checker spans and scores, output guard), `prompt_hash` |
+| `run_retrievals` | `run_id`, `chunk_id`, `rank`, `keyword_score`, `vector_score`, `rerank_score`, `in_prompt` (S1…S5 label or NULL) |
+| `feedback` | `id`, `message_id`, `user_id`, `rating` (+1 / −1), `comment` |
+
+**Review & training labels**
+
+| Table | Key columns |
+|---|---|
+| `review_items` | `id`, `company_id`, `run_id`, `reason`, `status` (open / approved / corrected / rejected), `assigned_to`, `resolved_by`, `resolved_at`, `corrected_answer`, `notes` |
+| `labels` | `id`, `company_id`, `run_id`, `source` (review / feedback), `target_model` (M1 / M2 / M5 / M6), `payload`, `shareable`, `created_at` |
+
+`shareable` is copied from the company's `share_labels` setting **at the
+moment the label is created**, so turning sharing off later never
+retroactively exposes or hides past labels by accident. Only `shareable`
+labels appear in the Platform Admin's training-data view.
+
+**Audit log** — see 6.3.
+
+**Platform**
+
+| Table | Key columns |
+|---|---|
+| `model_versions` | `id`, `model_key` (M1–M6), `version`, `artifact_uri`, `metrics`, `status` (candidate / active / retired), `promoted_by`, `promoted_at` |
+| `eval_runs` | `id`, `model_versions`, `dataset_version`, `status`, `metrics`, `started_by`, `started_at`, `finished_at` |
+| `notifications` | `id`, `user_id`, `company_id`, `type`, `payload`, `read_at` |
+| `usage_daily` | `company_id`, `date`, `queries`, `decisions` — counters used to enforce limits and draw usage charts |
+
+### 6.3 Hash-chained audit log
+
+```
+audit_log: id (sequence) · company_id · actor_user_id · actor_type (user / system)
+           · action · entity_type · entity_id · payload · created_at
+           · prev_hash · hash
+```
+
+- **One chain per company**, plus one platform chain (`company_id` NULL), so a
+  company can export and verify its own chain independently.
+- `hash = SHA-256(prev_hash ‖ canonical JSON of the entry)`. The first entry of
+  a chain uses a fixed genesis value as `prev_hash`.
+- Appends take a per-chain lock so concurrent writes can't fork the chain.
+- The database role used by the API has **INSERT and SELECT only** on
+  `audit_log` — no UPDATE or DELETE.
+- **"Verify integrity"** (Platform Admin, Company Admin, Viewer) recomputes the
+  chain and reports the first broken link, if any. Any edit or deletion breaks
+  every hash after it.
+
+**What is audited:** every answer run (with a hash of its full trace), review
+decisions, persona changes, user and role changes, invitations, document
+uploads and deletions, settings changes, logins, model promotions and
+rollbacks, and every Platform Admin action.
+
+### 6.4 Document ingestion
+
+Supported formats: **PDF** (text-based; scanned images are out of scope),
+**HTML** (SEC EDGAR filings), **Word (.docx)**, **plain text / Markdown**.
+
+`uploaded → processing → indexed` (or `failed` / `quarantined`), run by the
+background worker:
+
+1. **Store** the original file; record its SHA-256 (duplicates are rejected
+   per company).
+2. **Extract** text with structure — page numbers (PDF), headings and tables
+   (HTML, DOCX).
+3. **Chunk** into ~300–500-token passages along section boundaries, with a
+   small overlap; tables are kept whole where possible.
+4. **Scan** each chunk with the attack detector (M1); flagged chunks are
+   quarantined for Company Admin review (section 5.3).
+5. **Embed** (M3) and build the full-text vector, then mark the document
+   `indexed`.
+
+---
+
 ## Appendix A — Decision log
 
 | # | Decision | Choice | Why |
@@ -369,3 +530,6 @@ The writer dominates, which is why it gets a live progress display (section
 | D14 | Retries on failed verification | 1 retry with failure feedback, then escalate | Balances answer rate against CPU latency |
 | D15 | Borderline scores | Escalate to a human; LLM-as-judge only offline | Keeps live latency low; humans produce training labels |
 | D16 | Failure handling | Fail closed — never show an unverified answer | The core promise of the product |
+| D17 | Default writer size | 3B–4B model at 4-bit; 1.5B configurable fallback | Fits a 16 GB laptop alongside the rest of the stack |
+| D18 | Upload formats | PDF (text-based), HTML, DOCX, TXT/Markdown | Covers SEC filings and typical company documents |
+| D19 | Audit log integrity | Append-only, hash-chained per company, with "verify integrity" | Tampering is detectable, not just forbidden |
