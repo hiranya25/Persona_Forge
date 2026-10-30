@@ -8,7 +8,7 @@
 1. [Overview & goals](#1-overview--goals)
 2. [Users, roles & portals](#2-users-roles--portals)
 3. [Features per portal](#3-features-per-portal)
-4. High-level architecture — _TBD_
+4. [High-level architecture](#4-high-level-architecture)
 5. AI/ML pipeline — _TBD_
 6. Data model — _TBD_
 7. API design — _TBD_
@@ -138,6 +138,86 @@ There is no public sign-up.
 
 ---
 
+## 4. High-level architecture
+
+```
+ ┌──────────────┐   ┌────────────────┐
+ │ Admin portal │   │ Company portal │      React + TypeScript (one codebase)
+ └──────┬───────┘   └───────┬────────┘
+        └──── HTTPS / JSON + Server-Sent Events ────┐
+                            ▼                       │
+                ┌───────────────────────┐           │
+                │   API service         │  FastAPI: auth, roles, tenants,
+                │   (modular monolith)  │  personas, chat, review, audit
+                └───┬──────────┬────────┘
+                    │          │ jobs
+        ┌───────────▼──┐   ┌───▼────────────────┐
+        │ Inference    │   │ Background worker  │  document ingestion, eval runs,
+        │ service      │   │                    │  notifications, label exports
+        │ guard, fact  │   └───┬────────────────┘
+        │ checker,     │       │
+        │ embedder,    │       │
+        │ reranker     │       │
+        │ (ONNX, CPU)  │       │
+        └──────┬───────┘       │
+               │      ┌────────▼─────────┐   ┌────────────┐   ┌──────────────┐
+               │      │ Postgres         │   │ Redis      │   │ File storage │
+               │      │ app data +       │   │ job queue, │   │ uploaded     │
+               │      │ pgvector +       │   │ rate limit,│   │ documents    │
+               │      │ full-text search │   │ pub/sub    │   │ (volume)     │
+               │      └──────────────────┘   └────────────┘   └──────────────┘
+        ┌──────▼───────┐
+        │ Ollama       │  writer LLM (GGUF, CPU)
+        └──────────────┘
+```
+
+### 4.1 Components
+
+| Component | Responsibility | Technology |
+|---|---|---|
+| **Web app** | Both portals. One codebase with two route trees — `/admin/*` (Platform Admin) and `/app/*` (company roles) — sharing a component library and the existing palette | React, TypeScript, Vite |
+| **API service** | The only public backend. Authentication, role checks, tenant isolation, business logic, orchestration of the AI pipeline, audit writes | FastAPI (Python), SQLAlchemy, Pydantic |
+| **Inference service** | Internal-only. Keeps the small models loaded in memory and serves them over HTTP: gatekeeper, embedder, reranker, fact checker | FastAPI + ONNX Runtime (CPU, INT8) |
+| **Writer LLM** | Generates answers from retrieved passages under the persona's rules | Ollama serving a fine-tuned GGUF model |
+| **Background worker** | Slow or deferred work: parse → chunk → embed documents, run evaluation suites, send notifications, export training labels | Python worker on a Redis queue |
+| **Postgres** | System of record: tenants, users, personas, conversations, audit log, document chunks, **vectors (pgvector)**, and **keyword search (full-text)** — so hybrid search is one query with a tenant filter | PostgreSQL 16 + pgvector |
+| **Redis** | Job queue, rate limiting, pub/sub for live progress and notifications | Redis |
+| **File storage** | Original uploaded documents | Local Docker volume (S3-compatible MinIO is a drop-in later) |
+
+The API service is a **modular monolith**: one deployable, internally split
+into modules with clear boundaries — `auth`, `tenants`, `users`, `personas`,
+`documents`, `chat`, `review`, `audit`, `models`, `evals`. Any module can be
+split into its own service later without changing the others' contracts.
+
+### 4.2 How a chat message flows
+
+1. The analyst sends a question; the API authenticates them, checks their role
+   and their company's limits, and opens a **Server-Sent Events** stream.
+2. The API runs the AI pipeline (detailed in section 5), pushing a **progress
+   event** at each stage:
+   `Checking question → Searching documents → Writing → Verifying`.
+3. The answer is shown **only after verification** — never word-by-word —
+   so unverified text never reaches the user.
+4. The final decision (pass / refuse / escalate) and everything that produced
+   it is written to the audit log **in the same transaction** as the message.
+5. Escalated answers land in the company's review queue; when a Reviewer
+   resolves one, the worker pushes a notification and the final answer into the
+   analyst's conversation.
+
+### 4.3 Why this shape
+
+- **One language (Python)** across API, ML, and training code.
+- **Modular monolith** — far simpler to build and run than microservices, with
+  boundaries clean enough to split later.
+- **Separate inference service** — models load once and stay in memory; they
+  can be upgraded or rolled back without redeploying the API.
+- **One database** — pgvector + Postgres full-text keep app data, vectors, and
+  keyword index together, so tenant filtering and transactions are trivial.
+- **Entirely free and local** — every component runs on a laptop CPU via
+  `docker compose up`.
+
+---
+
 ## Appendix A — Decision log
 
 | # | Decision | Choice | Why |
@@ -149,3 +229,7 @@ There is no public sign-up.
 | D5 | Company onboarding | Invite-only | Realistic for B2B; no abuse surface from open sign-up |
 | D6 | Review labels for retraining | Opt-in per company | Feeds the training loop while respecting tenant privacy |
 | D7 | Escalation experience | "Under review" + notification with the final answer | Analyst always gets a resolution, not a dead end |
+| D8 | Overall architecture | Modular-monolith FastAPI API + separate inference service + worker + Postgres + Redis + Ollama | Simple to run, clean boundaries, all free and CPU-friendly |
+| D9 | Frontend | React + TypeScript, one codebase with `/admin` and `/app` route trees | Job-relevant; shared components across both portals |
+| D10 | Vector + keyword search | Postgres + pgvector + full-text search | One store, easy tenant filtering, hybrid search in one query |
+| D11 | Waiting experience | Live progress steps via Server-Sent Events; answer shown only after verification | Keeps the "verified before delivery" promise while staying responsive |
