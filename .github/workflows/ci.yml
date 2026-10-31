@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  api:
+    name: API — lint, types, tests, migrations
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/api
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 3s --health-retries 20
+    env:
+      PGHOST: localhost
+      PGPASSWORD: postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --frozen
+      - name: Create database roles
+        run: bash ../../infra/docker/postgres/init-roles.sh
+      - run: uv run ruff check .
+      - run: uv run mypy app
+      - name: Tests (including the cross-tenant isolation suite)
+        run: uv run pytest -q
+      - name: Migrations upgrade and downgrade cleanly
+        run: |
+          uv run alembic upgrade head
+          uv run alembic downgrade base
+          uv run alembic upgrade head
+      - name: Dependency audit
+        run: |
+          uv export --frozen --no-dev --no-hashes -o requirements.txt
+          uvx pip-audit -r requirements.txt
+
+  web:
+    name: Web — types, tests, build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - run: npm audit --omit=dev --audit-level=high
+
+  images:
+    name: Docker images build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t persona-forge-api:ci services/api

@@ -1,79 +1,86 @@
-# Persona Forge — Landing Page + Product Preview
+# Persona Forge
 
-Two things that now work together as one flow: a marketing landing page
-(this folder) and a clickable product preview (`app/`). A "Log in" button
-on the landing page opens a modal; submitting it drops you straight into
-the product preview's dashboard, skipping its own login screen.
+A multi-tenant platform for **rule-following AI assistants**. Companies get assistants that
+answer only from approved documents, follow a versioned rule set (a *persona*), have every
+answer checked by trained verifier models before anyone sees it, and record everything in a
+tamper-evident audit log.
 
-Plain HTML/CSS/JS throughout. No build step, no framework.
+Everything runs on free tooling and a laptop CPU. The full design (architecture, AI pipeline,
+data model, security, training plan, and roadmap) is in
+**[docs/system-design.md](docs/system-design.md)**.
 
-## File structure
+## Status
+
+| Phase | Scope | State |
+|---|---|---|
+| **P0 — Foundations** | Monorepo, auth with MFA, companies/users/roles, Row-Level Security, hash-chained audit log, both portal shells, CI | ✅ Done |
+| P1 — Documents & baseline RAG | Ingestion, hybrid search, writer LLM, chat with citations, eval harness | Next |
+| P2–P5 | Guardrails, trained verifiers, writer tuning, production launch | Planned |
+
+## Repository layout
 
 ```
-persona-forge/
-├── index.html          Landing page — nav now includes "Log in"
-├── css/
-│   └── styles.css        Landing page styles + the login modal
-├── js/
-│   ├── config.js          ← edit YOUR_EMAIL_HERE, and formEndpoint once deployed
-│   └── main.js             Landing page behavior, including the login modal
-├── server/                Optional backend — sends real email via your SMTP
-│   ├── app.py
-│   ├── requirements.txt
-│   ├── .env.example
-│   └── README.md
-├── app/                    The product preview (separate mini-project)
-│   ├── index.html
-│   ├── css/app.css
-│   ├── js/mockData.js
-│   ├── js/app.js
-│   └── README.md            Full detail on the product preview itself
-└── README.md
+apps/web/            React + TypeScript — Admin portal (/admin) and Company portal (/app)
+services/api/        FastAPI modular monolith, Alembic migrations, tests
+infra/docker/        Database role setup (and later: proxy, dashboards)
+docs/                System design; legacy/ui-mock holds the original clickable mock
+compose.yaml         Local development stack
 ```
 
-## How the login flow works
-
-1. Clicking **Log in** in the landing page nav opens a modal (any email/password works — there's no real backend behind it).
-2. Submitting it sets a flag in the browser's `localStorage` and redirects to `app/index.html`.
-3. The product preview checks that flag on load. If it's set, it skips its own login screen and opens straight to the dashboard. If someone opens `app/index.html` directly (no flag set), its own login screen shows as normal — it still works standalone.
-4. Signing out inside the product preview clears the flag, so a fresh visit to `app/index.html` will show its login screen again until someone logs in from either place.
-
-This only works because both pieces are served from the **same origin** —
-`localStorage` doesn't cross domains. Keep `app/` nested inside this
-folder exactly as it is; don't split them across two different hosts.
-
-## Running it locally
+## Quick start (Docker)
 
 ```bash
-python3 -m http.server 8000
-# open http://localhost:8000 — try "Log in" in the nav
+docker compose up --build
 ```
 
-## Hosting
+Then create the first Platform Admin:
 
-Upload or deploy this whole `persona-forge/` folder as one static site —
-Netlify, Vercel, GitHub Pages, or any static host. `app/` just needs to
-stay as a subfolder of the root for the relative links to keep working.
-(`server/` is separate and needs its own always-on host if you use it for
-real email delivery — see `server/README.md`.)
+```bash
+docker compose exec api python -m app.cli create-platform-admin --email you@example.com --name "Your Name"
+```
 
-## Editing
-
-- **Landing page copy/structure** → `index.html`
-- **Landing page styles, including the login modal** → `css/styles.css`
-- **Login modal behavior, contact email, backend URL** → `js/main.js`, `js/config.js`
-- **The product preview itself** (screens, mock data, tenants) → see `app/README.md` — it's a self-contained project with its own detailed docs
-
-Palette reference (shared by both the landing page and the product preview):
-
-| Token | Hex |
+| URL | What |
 |---|---|
-| Ground | `#F6F5F1` |
-| Ground (alt section) | `#EFEDE6` |
-| Beige | `#EAE0C9` |
-| Beige (deep / borders) | `#DCCBA3` |
-| Ink | `#14171C` |
-| Ink (soft) | `#4B5159` |
-| Accent (teal) | `#2A6F5E` |
-| Flag / risk (rust) | `#B5502D` |
-| Border | `#DEDBD1` |
+| http://localhost:5173 | Web app: sign in, set up your second factor, create a company |
+| http://localhost:8025 | Mailpit: every email the app sends (invitations, sign-in codes) |
+| http://localhost:8000/api/docs | Interactive API documentation |
+
+## How sign-in works
+
+| Who | How |
+|---|---|
+| Platform Admin, Company Admin | Password, then a **mandatory** second factor (authenticator app or email code); 10 one-time recovery codes |
+| Analyst, Reviewer, Viewer | Account created by their Company Admin; sign in with **password or an email code** |
+
+Companies join by invitation only: the Platform Admin creates a company and invites its
+Company Admin, who then creates the rest of the team.
+
+## Development without Docker
+
+Needs Python 3.12+, [uv](https://docs.astral.sh/uv/), Node 22, and Postgres 16.
+
+```bash
+# once: create the database roles (as a Postgres superuser)
+PGHOST=localhost PGPASSWORD=postgres bash infra/docker/postgres/init-roles.sh
+
+cd services/api
+uv sync
+cp .env.example .env          # set EMAIL_BACKEND=console to print emails to the log
+uv run alembic upgrade head
+uv run uvicorn app.main:app --reload
+
+cd apps/web
+npm install
+npm run dev
+```
+
+## Tests
+
+```bash
+cd services/api && uv run pytest     # needs Postgres; see tests/conftest.py
+cd apps/web && npm test
+```
+
+The API suite includes a **cross-tenant isolation suite** that checks every company boundary,
+both through the API and with raw SQL against Postgres Row-Level Security, plus tamper tests
+for the audit log.

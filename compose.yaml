@@ -1,0 +1,66 @@
+# Local development stack:  docker compose up --build
+#   Web app      http://localhost:5173
+#   API docs     http://localhost:8000/api/docs
+#   Mailpit      http://localhost:8025   (every email the app sends lands here)
+name: persona-forge
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./infra/docker/postgres/init-roles.sh:/docker-entrypoint-initdb.d/10-init-roles.sh:ro
+    ports: ["5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d personaforge"]
+      interval: 3s
+      retries: 20
+
+  redis:
+    image: redis:7.4-alpine
+    ports: ["6379:6379"]
+
+  mailpit:
+    image: axllent/mailpit:v1.21
+    ports: ["8025:8025", "1025:1025"]
+
+  api:
+    build: ./services/api
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir app"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://pf_app:pf_app@postgres:5432/personaforge
+      MIGRATION_DATABASE_URL: postgresql+asyncpg://pf_owner:pf_owner@postgres:5432/personaforge
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: dev-only-secret-change-me-in-production-0123456789
+      WEB_ORIGIN: http://localhost:5173
+      EMAIL_BACKEND: smtp
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+    volumes:
+      - ./services/api/app:/app/app
+      - ./services/api/migrations:/app/migrations
+    ports: ["8000:8000"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_started }
+      mailpit: { condition: service_started }
+
+  web:
+    image: node:22-alpine
+    working_dir: /web
+    command: sh -c "npm ci && npm run dev"
+    environment:
+      API_PROXY_TARGET: http://api:8000
+    volumes:
+      - ./apps/web:/web
+      - web_node_modules:/web/node_modules
+    ports: ["5173:5173"]
+    depends_on: [api]
+
+volumes:
+  pgdata:
+  web_node_modules:
