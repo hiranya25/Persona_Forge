@@ -1,7 +1,9 @@
 # Persona Forge — System Design
 
-> Status: **In progress** — written section by section, each one reviewed and
-> approved before it lands here. Sections marked _TBD_ are not designed yet.
+> Status: **v1 — approved.** Every section was reviewed and approved
+> individually; the reasoning behind each choice is in the
+> [decision log](#appendix-a--decision-log). Changes from here on are made by
+> adding a new decision to the log and updating the affected section.
 
 ## Contents
 
