@@ -13,7 +13,7 @@
 6. [Data model](#6-data-model)
 7. [API design](#7-api-design)
 8. [Multi-tenancy & security](#8-multi-tenancy--security)
-9. Model training & evaluation — _TBD_
+9. [Model training & evaluation](#9-model-training--evaluation)
 10. Deployment, monitoring & CI — _TBD_
 11. Phased roadmap — _TBD_
 
@@ -79,8 +79,10 @@ The platform has **two portals** and **five roles**.
 
 1. Platform Admin creates the company and sets its limits.
 2. Platform Admin invites the company's first **Company Admin** by email link.
-3. The Company Admin accepts, sets a password, and invites the rest of their
-   team with roles.
+3. The Company Admin accepts, sets a password, and sets up their second
+   factor.
+4. The Company Admin creates accounts for the rest of the team: email, roles,
+   and an **initial password**. On first sign-in each user must replace it.
 
 There is no public sign-up.
 
@@ -105,7 +107,7 @@ There is no public sign-up.
 
 **Company Admin**
 
-- **Users** — invite, assign roles, deactivate.
+- **Users** — create accounts (email, roles, initial password), reset passwords, change roles, deactivate.
 - **Personas** — clone a platform template, edit, version, activate, roll back.
   A company can have **several active personas**; analysts pick one per
   conversation.
@@ -385,7 +387,7 @@ model_versions · eval_runs · notifications · usage_daily
 | Table | Key columns |
 |---|---|
 | `companies` | `id`, `name`, `slug`, `status` (active / suspended), `limits` (max users, max documents, queries per day), `strictness` (lenient / standard / strict), `share_labels` (bool, opt-in), `created_at` |
-| `users` | `id`, `company_id` (NULL for Platform Admins), `email` (unique), `password_hash` (Argon2id; admins only — NULL for passwordless users), `full_name`, `is_platform_admin`, `status` (invited / active / deactivated), `last_login_at` |
+| `users` | `id`, `company_id` (NULL for Platform Admins), `email` (unique), `password_hash` (Argon2id), `must_change_password`, `full_name`, `is_platform_admin`, `status` (invited / active / deactivated), `last_login_at` |
 | `user_roles` | `user_id`, `role` (company_admin / analyst / reviewer / viewer) — one row per role held |
 | `invitations` | `id`, `company_id`, `email`, `roles`, `token_hash`, `expires_at`, `accepted_at`, `invited_by` |
 | `refresh_tokens` | `id`, `user_id`, `family_id`, `token_hash`, `expires_at`, `revoked_at` — rotated on every use; reuse of an old token revokes the whole family |
@@ -539,9 +541,9 @@ background worker:
 
 | Group | Endpoints | Roles |
 |---|---|---|
-| **Auth** | `POST /auth/login` (admin password), `POST /auth/otp/request`, `POST /auth/otp/verify`, `POST /auth/mfa/verify`, `POST /auth/passkey/options`, `POST /auth/passkey/verify`, `POST /auth/recovery`, `POST /auth/refresh`, `POST /auth/logout`, `POST /invitations/{token}/accept` | Public / any |
-| **Me** | `GET /me`, `GET/POST/DELETE /me/mfa-methods`, `POST /me/recovery-codes` | Any signed-in user |
-| **Users** | `GET /users`, `POST /invitations`, `PATCH /users/{id}` (roles, status) | Company Admin |
+| **Auth** | `POST /auth/login` (email + password), `POST /auth/otp/request`, `POST /auth/otp/verify`, `POST /auth/mfa/verify`, `POST /auth/passkey/options`, `POST /auth/passkey/verify`, `POST /auth/recovery`, `POST /auth/refresh`, `POST /auth/logout`, `POST /invitations/{token}/accept` | Public / any |
+| **Me** | `GET /me`, `POST /me/password`, `GET/POST/DELETE /me/mfa-methods`, `POST /me/recovery-codes` | Any signed-in user |
+| **Users** | `GET /users`, `POST /users` (email, roles, initial password), `PATCH /users/{id}` (roles, status), `POST /users/{id}/reset-password` | Company Admin |
 | **Settings & usage** | `GET/PATCH /settings` (strictness, label sharing, enabled collections), `GET /usage` | Company Admin |
 | **Personas** | `GET /personas`, `POST /personas` (clone a template), `GET /personas/{id}/versions`, `POST /personas/{id}/versions`, `POST /personas/{id}/activate`, `POST /personas/{id}/rollback` | Company Admin (read: all roles) |
 | **Templates** | `GET /persona-templates` | Company Admin |
@@ -611,8 +613,11 @@ The writer (M6) is called through Ollama's own HTTP API.
 | Users | First factor | Second factor | Recovery |
 |---|---|---|---|
 | **Platform Admin, Company Admin** | Password (Argon2id) | **Mandatory** — one of: **passkey** (WebAuthn), **authenticator app** (TOTP), or **email OTP** | 10 one-time **recovery codes**, shown once, stored hashed |
-| **Analyst, Reviewer, Viewer** | **Email OTP** (passwordless) | — | A new code by email |
+| **Analyst, Reviewer, Viewer** | **Either** email + password **or** email OTP — the user chooses at each sign-in | — | Email OTP, or a password reset by their Company Admin |
 
+- **Employee accounts:** the Company Admin creates each account with an
+  initial password; the user **must change it on first sign-in**. After that
+  they can sign in with their password or with an email code.
 - **Email OTP:** 6 digits, valid 10 minutes, single use, stored hashed, at most
   5 attempts per code, and rate-limited per email and per IP. Responses are the
   same whether or not the email exists.
@@ -685,6 +690,148 @@ reach another company's data through every endpoint and must always fail.
 
 ---
 
+## 9. Model training & evaluation
+
+### 9.1 Workflow and tools (all free)
+
+```
+build dataset ──► train on Kaggle / Colab GPU ──► track in Weights & Biases
+      │                                                  │
+      ▼                                                  ▼
+publish dataset to HF Hub            export (ONNX INT8 / GGUF) ──► publish model to HF Hub
+                                                         │
+                                                         ▼
+                       register as "candidate" ──► evaluation gate ──► promote to "active"
+```
+
+- **Training:** Kaggle Notebooks (≈30 free GPU-hours a week) with Google Colab
+  as backup. Training code lives in the repo and runs the same way locally on
+  small samples, so notebooks only call it.
+- **Experiment tracking:** **Weights & Biases** (free personal tier) — every
+  run logs its config, dataset version, metrics, and charts; final dashboards
+  are made public.
+- **Publishing:** every trained model and every dataset we build is
+  **published publicly on Hugging Face Hub** with a model/dataset card
+  (training data, method, metrics, limitations). The app downloads the active
+  versions at startup.
+- **Reproducibility:** fixed seeds, pinned library versions, and dataset
+  versions recorded in every run and every `eval_runs` row.
+
+### 9.2 Per-model training plans
+
+**M1 — Attack detector** (text → benign / jailbreak / prompt injection)
+
+- **Data:** `deepset/prompt-injections`, `jackhhao/jailbreak-classification`,
+  JailbreakBench; *benign* examples from FinanceBench / FinQA questions and
+  XSTest's safe-but-scary prompts; **synthetic indirect injections** hidden
+  inside real filing passages.
+- **Method:** fine-tune ModernBERT-base / DeBERTa-v3-small, cross-entropy with
+  class weights.
+- **Key metric:** attack recall at a **≤1% false-positive rate** on benign
+  finance questions (blocking real users is costly too).
+
+**M2 — Rule matcher** (*(text, rule)* → violation probability)
+
+- **Data — synthetic, built by us:**
+  1. A bank of ~300 diverse forbidden-topic rules across domains (finance,
+     legal, HR, health, support).
+  2. For each rule, an open-weight LLM running on Kaggle generates
+     **violating** questions and answers, and **hard negatives** — same topic,
+     but allowed (*"What does the 10-K say about the lawsuit?"* is fine;
+     *"Will they lose the lawsuit?"* violates *"no predictions about pending
+     litigation"*).
+  3. Random negatives from other rules, plus safety datasets (BeaverTails,
+     ToxicChat) mapped onto rule texts.
+  4. ~500 test pairs **checked by hand**.
+- **Method:** cross-encoder fine-tune (ModernBERT-base / DeBERTa-v3-base),
+  binary cross-entropy.
+- **Key metric:** F1 / AUROC on **held-out rules the model never saw in
+  training** — this is what proves it handles a company's custom rules.
+
+**M3 — Embedder** (text → vector)
+
+- **Data:** question → passage pairs from FinQA, TAT-QA, and ConvFinQA, plus
+  synthetic questions generated from EDGAR passages; **hard negatives** mined
+  with BM25.
+- **Method:** contrastive fine-tune of bge-small-en-v1.5 with in-batch
+  negatives (MultipleNegativesRankingLoss).
+- **Key metric:** Recall@5 / nDCG@10 on **held-out companies**, versus the
+  untouched base model.
+
+**M4 — Reranker** — pretrained bge-reranker-base at first; fine-tuning on the
+same pairs as M3 is a stretch goal.
+
+**M5 — Fact checker** (*(passages, answer)* → unsupported spans)
+
+- **Data:** **RAGTruth** (human-labelled hallucinated spans in RAG answers),
+  plus **synthetic finance perturbations**: take correct answers and change a
+  number, year, company, or direction (*increased* → *decreased*), so the
+  altered span's label is known exactly.
+- **Method:** ModernBERT-base token classification over the concatenated
+  passages and answer (long context fits ModernBERT).
+- **Key metrics:** span- and sentence-level F1 and AUROC, compared against two
+  baselines — an off-the-shelf NLI model and an LLM judge.
+
+**M6 — Writer** (persona prompt + passages → cited answer)
+
+- **Stage 1 — SFT (QLoRA):** training examples (persona, question, passages →
+  cited answer *or* correct refusal) produced by a **larger open-weight
+  teacher model** run on Kaggle's free GPUs (4-bit). Only examples that **pass
+  our own verifiers** (citations, numbers, M5, M2) are kept —
+  *self-verified distillation*.
+- **Stage 2 — DPO:** sample several answers per prompt from the SFT model; an
+  answer that passes verification is *chosen*, one that fails is *rejected*.
+  **The verifiers generate the preference data** — no human or paid labeller
+  needed.
+- **Export:** merge LoRA → GGUF (Q4) → Ollama.
+- **Key metrics:** first-attempt pass rate, citation accuracy, faithfulness,
+  persona-violation rate, refusal correctness — reported for base model → SFT
+  → DPO.
+
+### 9.3 Calibration and thresholds
+
+- Each classifier (M1, M2, M5) is **calibrated** with temperature scaling on a
+  validation set; reliability diagrams and Expected Calibration Error are
+  logged to W&B.
+- The three **strictness presets** (section 5.1) are chosen from
+  precision–recall curves on the validation set, e.g. *Strict* = recall on
+  violations ≥ 98%, *Standard* = best F1, *Lenient* = false-positive rate ≤ 1%.
+- The "borderline" band is the score range where calibrated confidence is
+  between the preset's lower and upper thresholds.
+
+### 9.4 Evaluation suites
+
+| Suite | Contents | Measures |
+|---|---|---|
+| **Component** | Each model's held-out test set | The model's own metrics (above) |
+| **Golden end-to-end** | FinanceBench (150 questions) + ~300 curated questions over the shared library, each with an expected answer or an expected refusal | Answer correctness, faithfulness, citation precision, decision accuracy |
+| **Red team** | Jailbreaks, forbidden-topic requests, out-of-scope questions, documents with hidden injections | Attack block rate, rule-violation leak rate |
+| **Over-refusal** | Safe questions that *sound* risky (XSTest-style, finance-flavoured) | False refusal rate |
+| **Performance** | Fixed load script | p50 / p95 latency per stage, throughput |
+
+- **Answer correctness** uses exact numeric matching where possible and an
+  **offline LLM-as-judge** (the largest open model that fits a free Kaggle
+  GPU) otherwise; the judge itself is spot-checked against ~100 human labels.
+- Splits are made **by company, by rule, and by document** so no test item
+  leaks into training. Eval sets are never used for training.
+
+### 9.5 Release gate
+
+A new model version starts as a **candidate**. It can be promoted to
+**active** (from the admin portal) only if the end-to-end and red-team suites
+show **no key metric regressing beyond a set tolerance** against the current
+active version. Promotion and rollback are one click, versioned, and audited.
+
+### 9.6 Continuous improvement loop
+
+1. Reviewer decisions and 👍/👎 feedback create labels (section 6.2).
+2. Labels from companies that **opted in** are exported from the admin portal.
+3. They are merged into the training sets as a new dataset version, with
+   hard-to-classify examples prioritised (*active learning*).
+4. Retraining produces a new candidate, which goes through the release gate.
+
+---
+
 ## Appendix A — Decision log
 
 | # | Decision | Choice | Why |
@@ -709,7 +856,12 @@ reach another company's data through every endpoint and must always fail.
 | D18 | Upload formats | PDF (text-based), HTML, DOCX, TXT/Markdown | Covers SEC filings and typical company documents |
 | D19 | Audit log integrity | Append-only, hash-chained per company, with "verify integrity" | Tampering is detectable, not just forbidden |
 | D20 | Browser sessions | Short-lived access + rotating refresh tokens in httpOnly cookies, CSRF token | Tokens unreadable by JavaScript; refresh-token theft detectable |
-| D21 | Authentication | Admins: password + mandatory passkey / TOTP / email OTP, with recovery codes. Analysts, Reviewers, Viewers: passwordless email OTP | Strong protection where privileges are high, low friction for everyday users |
+| D21 | Authentication | Admins: password + mandatory passkey / TOTP / email OTP, with recovery codes. Analysts, Reviewers, Viewers: account created by the Company Admin with an initial password (changed on first sign-in), then email + password or email OTP | Strong protection where privileges are high, flexible sign-in for everyday users |
 | D22 | Platform Admin access to company content | Break-glass only: written reason, time-limited, read-only, audited, Company Admin notified | Realistic privacy model while still allowing support and debugging |
 | D23 | Tenant isolation | Application-level scoping + Postgres Row-Level Security + cross-tenant test suite | Defence in depth — a single bug can't leak data |
 | D24 | API style | REST + JSON, OpenAPI docs, SSE for live updates, company always taken from the session | Simple, well-documented, and safe by construction |
+| D25 | Experiment tracking | Weights & Biases (free tier), public dashboards | Works from Kaggle/Colab with no setup; shareable evidence |
+| D26 | Publishing | All trained models and built datasets public on Hugging Face Hub with cards | Verifiable, reusable results |
+| D27 | Writer training data | Distilled from a larger open-weight teacher on free GPUs, filtered by our own verifiers; DPO pairs labelled by the verifiers | No paid APIs or human labellers needed |
+| D28 | Rule-matcher evaluation | Measured on held-out rules never seen in training | Proves it generalises to companies' custom rules |
+| D29 | Model release | Candidate → evaluation gate (no regression) → active; one-click rollback | Safe, auditable model updates |
