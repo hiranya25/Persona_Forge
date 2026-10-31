@@ -14,8 +14,8 @@
 7. [API design](#7-api-design)
 8. [Multi-tenancy & security](#8-multi-tenancy--security)
 9. [Model training & evaluation](#9-model-training--evaluation)
-10. Deployment, monitoring & CI — _TBD_
-11. Phased roadmap — _TBD_
+10. [Deployment, monitoring & CI](#10-deployment-monitoring--ci)
+11. [Phased roadmap](#11-phased-roadmap)
 
 [Appendix A — Decision log](#appendix-a--decision-log)
 
@@ -82,7 +82,7 @@ The platform has **two portals** and **five roles**.
 3. The Company Admin accepts, sets a password, and sets up their second
    factor.
 4. The Company Admin creates accounts for the rest of the team: email, roles,
-   and an **initial password**. On first sign-in each user must replace it.
+   and an **initial password**.
 
 There is no public sign-up.
 
@@ -387,7 +387,7 @@ model_versions · eval_runs · notifications · usage_daily
 | Table | Key columns |
 |---|---|
 | `companies` | `id`, `name`, `slug`, `status` (active / suspended), `limits` (max users, max documents, queries per day), `strictness` (lenient / standard / strict), `share_labels` (bool, opt-in), `created_at` |
-| `users` | `id`, `company_id` (NULL for Platform Admins), `email` (unique), `password_hash` (Argon2id), `must_change_password`, `full_name`, `is_platform_admin`, `status` (invited / active / deactivated), `last_login_at` |
+| `users` | `id`, `company_id` (NULL for Platform Admins), `email` (unique), `password_hash` (Argon2id), `full_name`, `is_platform_admin`, `status` (invited / active / deactivated), `last_login_at` |
 | `user_roles` | `user_id`, `role` (company_admin / analyst / reviewer / viewer) — one row per role held |
 | `invitations` | `id`, `company_id`, `email`, `roles`, `token_hash`, `expires_at`, `accepted_at`, `invited_by` |
 | `refresh_tokens` | `id`, `user_id`, `family_id`, `token_hash`, `expires_at`, `revoked_at` — rotated on every use; reuse of an old token revokes the whole family |
@@ -616,8 +616,8 @@ The writer (M6) is called through Ollama's own HTTP API.
 | **Analyst, Reviewer, Viewer** | **Either** email + password **or** email OTP — the user chooses at each sign-in | — | Email OTP, or a password reset by their Company Admin |
 
 - **Employee accounts:** the Company Admin creates each account with an
-  initial password; the user **must change it on first sign-in**. After that
-  they can sign in with their password or with an email code.
+  initial password. Users can then sign in with their password or with an
+  email code, and can change their password at any time.
 - **Email OTP:** 6 digits, valid 10 minutes, single use, stored hashed, at most
   5 attempts per code, and rate-limited per email and per IP. Responses are the
   same whether or not the email exists.
@@ -832,6 +832,104 @@ active version. Promotion and rollback are one click, versioned, and audited.
 
 ---
 
+## 10. Deployment, monitoring & CI
+
+### 10.1 Repository layout (monorepo)
+
+```
+persona-forge/
+├── apps/
+│   └── web/                 React + TypeScript — /admin and /app portals
+├── services/
+│   ├── api/                 FastAPI modular monolith + Alembic migrations
+│   ├── inference/           FastAPI + ONNX Runtime — M1–M5
+│   └── worker/              Background jobs (ingestion, evals, notifications)
+├── ml/
+│   ├── data/                Dataset builders (download, synthesise, split)
+│   ├── training/            Training scripts per model (run locally or from notebooks)
+│   ├── export/              ONNX / GGUF export and quantisation
+│   ├── evals/               Evaluation suites and the release-gate script
+│   └── notebooks/           Thin Kaggle / Colab launchers that call ml/
+├── packages/
+│   └── shared/              Shared Python code: persona schema, pipeline types
+├── infra/
+│   ├── docker/              Dockerfiles, docker-compose (dev and prod profiles)
+│   ├── caddy/               Reverse proxy config (HTTPS)
+│   └── grafana/             Dashboards and alert rules as code
+├── docs/                    Design docs, ADRs, model cards
+└── .github/workflows/       CI/CD
+```
+
+### 10.2 Environments
+
+| Environment | Where | Details |
+|---|---|---|
+| **Local development** | Your laptop | `docker compose up` — all services, hot reload, **Mailpit** for emails, seed script with demo companies, users, personas, and filings |
+| **Public demo** | **Oracle Cloud Always Free** ARM VM (up to 4 cores / 24 GB RAM) | Same compose file, `prod` profile; **Caddy** in front for automatic HTTPS on a free domain (e.g. DuckDNS); demo accounts for each role, demo data reset nightly |
+
+- Every image is built **multi-arch** (`amd64` + `arm64`), because the free
+  Oracle VM is ARM; Ollama and ONNX Runtime both support ARM.
+- Configuration follows the twelve-factor style: everything comes from
+  environment variables; secrets never enter images or Git.
+- **Database migrations** with Alembic run automatically on deploy.
+- **Backups:** nightly `pg_dump`, kept on the VM and copied to Oracle's
+  always-free object storage.
+
+### 10.3 CI/CD (GitHub Actions — free for public repos)
+
+**On every pull request**
+
+| Step | Tools |
+|---|---|
+| Lint & format | ruff, ESLint, Prettier |
+| Type checks | mypy, `tsc` |
+| Unit tests | pytest, Vitest |
+| API integration tests against a real Postgres + pgvector service container | pytest |
+| **Cross-tenant isolation suite** (section 8.3) | pytest |
+| Migration check (upgrade + downgrade on an empty DB) | Alembic |
+| **ML smoke eval** — verifier models on a ~50-item subset, CPU only | `ml/evals` |
+| Security scans | pip-audit, npm audit, Trivy (images) |
+| Build web app and Docker images | Vite, Docker Buildx |
+
+**On merge to `main`:** build multi-arch images → push to GitHub Container
+Registry (free) → deploy to the Oracle VM over SSH after a **manual approval**
+step → run a post-deploy health check.
+
+**On demand:** the full end-to-end and red-team suites run on the VM (or on
+Kaggle for GPU-heavy judging), and results land in the admin portal's
+evaluation dashboard (section 3.1).
+
+### 10.4 Monitoring
+
+| What | How |
+|---|---|
+| **Service metrics** — request rate, errors, p50/p95 latency per pipeline stage, queue depth | Prometheus scraping `/metrics` on the API, inference service, and worker |
+| **Dashboards** | Grafana, with dashboards kept as code in `infra/grafana/` |
+| **Logs** | Structured JSON with request IDs (no question or answer text — section 8.5) |
+| **Alerts** | Grafana alerting by email — service down, error rate, latency, failed backups |
+| **ML monitoring** | Daily distributions of M1, M2, and M5 scores; decision mix (refuse / escalate / no-evidence rates) per company; alerts when they drift from the baseline, a signal that a model or the incoming questions have changed |
+
+---
+
+## 11. Phased roadmap
+
+About **12 weeks part-time**. Every phase ends with something that runs end
+to end.
+
+| Phase | Duration | Build | Done when |
+|---|---|---|---|
+| **P0 — Foundations** | 1 week | Monorepo, Docker Compose, CI skeleton, DB schema and migrations, auth (password, email OTP, TOTP, recovery codes), companies, users and roles, Row-Level Security, hash-chained audit log | A Platform Admin can create a company; its admin can sign in with MFA and create users; the cross-tenant test suite passes |
+| **P1 — Documents & baseline RAG** | 2 weeks | Ingestion for all four formats, shared library of SEC filings, hybrid search with the **base** embedder, writer via Ollama with a **stock** model, chat over SSE with citations, evaluation harness + golden set v1 | An analyst gets cited answers; **baseline metrics recorded** |
+| **P2 — Guardrails v1** | 2 weeks | Persona templates and versioning, input guard and fact checker using **off-the-shelf baselines**, citation and number checks, decision engine with retry, review queue, notifications, core screens of both portals | The full pipeline works end to end with baseline models; red-team and over-refusal suites run |
+| **P3 — Train the verifiers** | 3 weeks | Datasets and training for **M1, M2, M3, M5**, calibration, ONNX export, model registry, release gate, publishing to HF Hub | Each trained model beats its baseline; promoted through the gate |
+| **P4 — Tune the writer** | 2 weeks | **M6** SFT then DPO, GGUF export | Pass rate up and violation rate down versus the stock model |
+| **P5 — Production & launch** | 2 weeks | Passkeys, break-glass access, monitoring and drift alerts, security scans, Oracle deployment, demo accounts, documentation | Public demo live; README with architecture, metrics tables, model links, demo video; write-up published |
+
+**Stretch goals:** fine-tuned reranker (M4), OCR for scanned PDFs, SSO/SAML,
+Kubernetes / Helm deployment, a public red-team leaderboard.
+
+---
+
 ## Appendix A — Decision log
 
 | # | Decision | Choice | Why |
@@ -856,7 +954,7 @@ active version. Promotion and rollback are one click, versioned, and audited.
 | D18 | Upload formats | PDF (text-based), HTML, DOCX, TXT/Markdown | Covers SEC filings and typical company documents |
 | D19 | Audit log integrity | Append-only, hash-chained per company, with "verify integrity" | Tampering is detectable, not just forbidden |
 | D20 | Browser sessions | Short-lived access + rotating refresh tokens in httpOnly cookies, CSRF token | Tokens unreadable by JavaScript; refresh-token theft detectable |
-| D21 | Authentication | Admins: password + mandatory passkey / TOTP / email OTP, with recovery codes. Analysts, Reviewers, Viewers: account created by the Company Admin with an initial password (changed on first sign-in), then email + password or email OTP | Strong protection where privileges are high, flexible sign-in for everyday users |
+| D21 | Authentication | Admins: password + mandatory passkey / TOTP / email OTP, with recovery codes. Analysts, Reviewers, Viewers: account created by the Company Admin with an initial password, then email + password or email OTP | Strong protection where privileges are high, flexible sign-in for everyday users |
 | D22 | Platform Admin access to company content | Break-glass only: written reason, time-limited, read-only, audited, Company Admin notified | Realistic privacy model while still allowing support and debugging |
 | D23 | Tenant isolation | Application-level scoping + Postgres Row-Level Security + cross-tenant test suite | Defence in depth — a single bug can't leak data |
 | D24 | API style | REST + JSON, OpenAPI docs, SSE for live updates, company always taken from the session | Simple, well-documented, and safe by construction |
@@ -865,3 +963,7 @@ active version. Promotion and rollback are one click, versioned, and audited.
 | D27 | Writer training data | Distilled from a larger open-weight teacher on free GPUs, filtered by our own verifiers; DPO pairs labelled by the verifiers | No paid APIs or human labellers needed |
 | D28 | Rule-matcher evaluation | Measured on held-out rules never seen in training | Proves it generalises to companies' custom rules |
 | D29 | Model release | Candidate → evaluation gate (no regression) → active; one-click rollback | Safe, auditable model updates |
+| D30 | Repository layout | Monorepo: apps/, services/, ml/, packages/, infra/ | One place for code, models, and infra; easy to keep in sync |
+| D31 | Public demo hosting | Oracle Cloud Always Free ARM VM, Docker Compose, Caddy HTTPS | Runs the full stack free; multi-arch images required |
+| D32 | CI/CD | GitHub Actions: tests, isolation suite, ML smoke eval, scans; manual-approval deploy | Free for public repos; regressions blocked before merge |
+| D33 | Monitoring | Prometheus + Grafana, dashboards as code, ML score-drift alerts | Free, standard, and covers both system and model health |
